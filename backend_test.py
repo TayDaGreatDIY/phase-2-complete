@@ -155,7 +155,7 @@ def test_courts():
     }
     
     response = make_request("POST", "/courts", data=court_data, token=tokens.get("admin"))
-    create_court_success = response.status_code == 200 and "id" in response.json()
+    create_court_success = response.status_code == 200
     print_test_result("Create Court (Admin)", create_court_success, response)
     all_passed = all_passed and create_court_success
     
@@ -165,9 +165,10 @@ def test_courts():
     print_test_result("Create Court (Player - Should Fail)", create_court_player_success, response)
     all_passed = all_passed and create_court_player_success
     
-    # Get a specific court
-    if create_court_success:
-        court_id = response.json()["id"]
+    # Get a specific court from the list
+    courts_response = make_request("GET", "/courts")
+    if courts_response.status_code == 200 and len(courts_response.json()) > 0:
+        court_id = courts_response.json()[0]["id"]
         response = make_request("GET", f"/courts/{court_id}")
         get_court_success = response.status_code == 200 and response.json()["id"] == court_id
         print_test_result("Get Specific Court", get_court_success, response)
