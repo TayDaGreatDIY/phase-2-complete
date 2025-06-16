@@ -102,7 +102,7 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "Please thoroughly test the M2DG Basketball App backend API. This is a comprehensive basketball community platform with authentication, user management, courts, challenges, coaches, games, products, and statistics endpoints."
+user_problem_statement: "Please thoroughly test the M2DG Basketball App Phase 2 backend features. This includes all the new real-time basketball functionality including WebSocket system, RFID system, court presence tracking, tournament management, live game scoring, and enhanced challenge system."
 
 backend:
   - task: "Authentication Endpoints"
@@ -240,14 +240,92 @@ backend:
         agent: "testing"
         comment: "Successfully tested health check endpoint. The endpoint returns the correct status, timestamp, and service information."
 
+  - task: "WebSocket System"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Implemented WebSocket connection at /ws/{user_id} and GET /api/websocket/stats endpoint for connection statistics."
+
+  - task: "RFID System"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Implemented RFID card management, check-in/out functionality, and event history tracking."
+
+  - task: "Court Presence Tracking"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Implemented court presence tracking with GET /api/courts/{court_id}/presence and GET /api/presence/user/{user_id} endpoints."
+
+  - task: "Tournament Management"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Implemented tournament creation, listing, registration, and match management endpoints."
+
+  - task: "Live Game Scoring"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Implemented live game scoring with POST /api/games/{game_id}/score, GET /api/games/{game_id}/events, and POST /api/games/{game_id}/join endpoints."
+
+  - task: "Enhanced Challenge System"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Implemented enhanced challenge matchmaking with POST /api/challenges/matchmaking and GET /api/challenges/matchmaking/suggestions endpoints."
+
 metadata:
   created_by: "testing_agent"
   version: "1.0"
-  test_sequence: 2
+  test_sequence: 3
   run_ui: false
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "WebSocket System"
+    - "RFID System"
+    - "Court Presence Tracking"
+    - "Tournament Management"
+    - "Live Game Scoring"
+    - "Enhanced Challenge System"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -257,3 +335,5 @@ agent_communication:
     message: "Starting comprehensive testing of all backend API endpoints. Will test authentication flows, data models, and endpoint functionality."
   - agent: "testing"
     message: "Completed comprehensive testing of all backend API endpoints. All endpoints are working correctly. Created and executed tests for authentication, user management, courts, challenges, coaches, games, products, and statistics endpoints. The backend API is fully functional and ready for use."
+  - agent: "testing"
+    message: "Starting testing of Phase 2 features including WebSocket system, RFID system, court presence tracking, tournament management, live game scoring, and enhanced challenge system."
