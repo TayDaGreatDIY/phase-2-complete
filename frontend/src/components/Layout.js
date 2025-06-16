@@ -9,8 +9,11 @@ const Layout = ({ children }) => {
     { name: 'Home', href: '/', icon: '🏠' },
     { name: 'Courts', href: '/courts', icon: '🏀' },
     { name: 'Challenges', href: '/challenges', icon: '⚔️' },
+    { name: 'Tournaments', href: '/tournaments', icon: '🏆' },
     { name: 'Store', href: '/store', icon: '🛍️' },
     { name: 'Coaches', href: '/coaches', icon: '👨‍🏫' },
+    { name: 'RFID', href: '/rfid', icon: '📱' },
+    { name: 'Live Scoring', href: '/live-scoring', icon: '⚡' },
   ];
 
   const handleLogout = () => {
