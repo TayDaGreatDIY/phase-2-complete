@@ -500,6 +500,604 @@ async def create_player_stats(stats_data: PlayerStats, current_user: User = Depe
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow(), "service": "M2DG Basketball API"}
 
+# ==============================================================================
+# PHASE 2: REAL-TIME BASKETBALL FEATURES
+# ==============================================================================
+
+# WebSocket endpoint for real-time communication
+@app.websocket("/ws/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, user_id: str):
+    try:
+        connection_id = await manager.connect(websocket, user_id)
+        logger.info(f"WebSocket connected for user {user_id}")
+        
+        while True:
+            try:
+                # Receive message from client
+                data = await websocket.receive_text()
+                message = json.loads(data)
+                
+                # Handle different message types
+                message_type = message.get("type")
+                
+                if message_type == "subscribe_court":
+                    court_id = message.get("court_id")
+                    if court_id:
+                        await manager.subscribe_to_court(connection_id, court_id)
+                
+                elif message_type == "unsubscribe_court":
+                    court_id = message.get("court_id")
+                    if court_id:
+                        await manager.unsubscribe_from_court(connection_id, court_id)
+                
+                elif message_type == "subscribe_game":
+                    game_id = message.get("game_id")
+                    if game_id:
+                        await manager.subscribe_to_game(connection_id, game_id)
+                
+                elif message_type == "subscribe_tournament":
+                    tournament_id = message.get("tournament_id")
+                    if tournament_id:
+                        await manager.subscribe_to_tournament(connection_id, tournament_id)
+                
+                elif message_type == "ping":
+                    await manager.send_personal_message({
+                        "type": "pong",
+                        "timestamp": datetime.utcnow().isoformat()
+                    }, connection_id)
+                
+            except WebSocketDisconnect:
+                break
+            except json.JSONDecodeError:
+                await manager.send_personal_message({
+                    "type": "error",
+                    "message": "Invalid JSON message"
+                }, connection_id)
+            except Exception as e:
+                logger.error(f"WebSocket error: {e}")
+                await manager.send_personal_message({
+                    "type": "error",
+                    "message": "Server error"
+                }, connection_id)
+                
+    except Exception as e:
+        logger.error(f"WebSocket connection error: {e}")
+    finally:
+        await manager.disconnect(connection_id)
+
+# WebSocket Stats
+@api_router.get("/websocket/stats")
+async def get_websocket_stats():
+    return manager.get_connection_stats()
+
+# ==============================================================================
+# RFID SYSTEM ENDPOINTS
+# ==============================================================================
+
+@api_router.post("/rfid/cards", response_model=RFIDCard)
+async def create_rfid_card(card_data: RFIDCard, current_user: User = Depends(get_current_user)):
+    # Only admin or the card owner can create RFID cards
+    if current_user.role != UserRole.ADMIN and card_data.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to create RFID card for another user")
+    
+    # Check if card UID already exists
+    existing_card = await db.rfid_cards.find_one({"card_uid": card_data.card_uid})
+    if existing_card:
+        raise HTTPException(status_code=400, detail="RFID card UID already exists")
+    
+    await db.rfid_cards.insert_one(card_data.dict())
+    return card_data
+
+@api_router.get("/rfid/cards", response_model=List[RFIDCard])
+async def get_rfid_cards(current_user: User = Depends(get_current_user), skip: int = 0, limit: int = 100):
+    if current_user.role == UserRole.ADMIN:
+        cards = await db.rfid_cards.find().skip(skip).limit(limit).to_list(limit)
+    else:
+        cards = await db.rfid_cards.find({"user_id": current_user.id}).skip(skip).limit(limit).to_list(limit)
+    return [RFIDCard(**card) for card in cards]
+
+@api_router.get("/rfid/cards/user/{user_id}", response_model=List[RFIDCard])
+async def get_user_rfid_cards(user_id: str, current_user: User = Depends(get_current_user)):
+    if current_user.role != UserRole.ADMIN and user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to view other user's RFID cards")
+    
+    cards = await db.rfid_cards.find({"user_id": user_id, "is_active": True}).to_list(100)
+    return [RFIDCard(**card) for card in cards]
+
+@api_router.post("/rfid/checkin")
+async def rfid_checkin(request: RFIDCheckInRequest):
+    # Find RFID card
+    card = await db.rfid_cards.find_one({"card_uid": request.card_uid, "is_active": True})
+    if not card:
+        # Log failed attempt
+        event = RFIDEvent(
+            card_uid=request.card_uid,
+            user_id="unknown",
+            court_id=request.court_id,
+            event_type=RFIDEventType.ACCESS_DENIED,
+            success=False,
+            error_message="Invalid or inactive RFID card",
+            device_id=request.device_id
+        )
+        await db.rfid_events.insert_one(event.dict())
+        raise HTTPException(status_code=404, detail="Invalid or inactive RFID card")
+    
+    # Check card expiry
+    if card.get("expiry_date") and datetime.fromisoformat(card["expiry_date"]) < datetime.utcnow():
+        event = RFIDEvent(
+            card_uid=request.card_uid,
+            user_id=card["user_id"],
+            court_id=request.court_id,
+            event_type=RFIDEventType.ACCESS_DENIED,
+            success=False,
+            error_message="RFID card expired",
+            device_id=request.device_id
+        )
+        await db.rfid_events.insert_one(event.dict())
+        raise HTTPException(status_code=403, detail="RFID card expired")
+    
+    # Check if user is already checked in
+    existing_presence = await db.court_presence.find_one({
+        "user_id": card["user_id"],
+        "court_id": request.court_id,
+        "check_out_time": None
+    })
+    
+    if existing_presence:
+        raise HTTPException(status_code=400, detail="User already checked in to this court")
+    
+    # Create presence record
+    presence = CourtPresence(
+        user_id=card["user_id"],
+        court_id=request.court_id,
+        rfid_card_uid=request.card_uid,
+        status=PresenceStatus.CHECKED_IN
+    )
+    await db.court_presence.insert_one(presence.dict())
+    
+    # Log successful check-in
+    event = RFIDEvent(
+        card_uid=request.card_uid,
+        user_id=card["user_id"],
+        court_id=request.court_id,
+        event_type=RFIDEventType.CHECK_IN,
+        success=True,
+        device_id=request.device_id
+    )
+    await db.rfid_events.insert_one(event.dict())
+    
+    # Update court's current players
+    await db.courts.update_one(
+        {"id": request.court_id},
+        {"$addToSet": {"current_players": card["user_id"]}}
+    )
+    
+    # Broadcast court presence update
+    await manager.broadcast_to_court({
+        "type": "player_checked_in",
+        "court_id": request.court_id,
+        "user_id": card["user_id"],
+        "rfid_card_uid": request.card_uid
+    }, request.court_id)
+    
+    # Get user info for response
+    user = await db.users.find_one({"id": card["user_id"]})
+    
+    return {
+        "success": True,
+        "message": "Successfully checked in",
+        "user": {
+            "id": user["id"],
+            "full_name": user["full_name"],
+            "username": user["username"]
+        } if user else None,
+        "check_in_time": presence.check_in_time.isoformat()
+    }
+
+@api_router.post("/rfid/checkout")
+async def rfid_checkout(request: RFIDCheckOutRequest):
+    # Find RFID card
+    card = await db.rfid_cards.find_one({"card_uid": request.card_uid, "is_active": True})
+    if not card:
+        event = RFIDEvent(
+            card_uid=request.card_uid,
+            user_id="unknown",
+            court_id=request.court_id,
+            event_type=RFIDEventType.ACCESS_DENIED,
+            success=False,
+            error_message="Invalid or inactive RFID card",
+            device_id=request.device_id
+        )
+        await db.rfid_events.insert_one(event.dict())
+        raise HTTPException(status_code=404, detail="Invalid or inactive RFID card")
+    
+    # Find active presence
+    presence = await db.court_presence.find_one({
+        "user_id": card["user_id"],
+        "court_id": request.court_id,
+        "check_out_time": None
+    })
+    
+    if not presence:
+        raise HTTPException(status_code=404, detail="No active check-in found")
+    
+    # Update presence record
+    checkout_time = datetime.utcnow()
+    await db.court_presence.update_one(
+        {"id": presence["id"]},
+        {
+            "$set": {
+                "check_out_time": checkout_time,
+                "status": PresenceStatus.CHECKED_OUT,
+                "updated_at": checkout_time
+            }
+        }
+    )
+    
+    # Log successful check-out
+    event = RFIDEvent(
+        card_uid=request.card_uid,
+        user_id=card["user_id"],
+        court_id=request.court_id,
+        event_type=RFIDEventType.CHECK_OUT,
+        success=True,
+        device_id=request.device_id
+    )
+    await db.rfid_events.insert_one(event.dict())
+    
+    # Remove from court's current players
+    await db.courts.update_one(
+        {"id": request.court_id},
+        {"$pull": {"current_players": card["user_id"]}}
+    )
+    
+    # Broadcast court presence update
+    await manager.broadcast_to_court({
+        "type": "player_checked_out",
+        "court_id": request.court_id,
+        "user_id": card["user_id"],
+        "rfid_card_uid": request.card_uid
+    }, request.court_id)
+    
+    # Calculate session duration
+    check_in_time = datetime.fromisoformat(presence["check_in_time"])
+    duration = checkout_time - check_in_time
+    
+    return {
+        "success": True,
+        "message": "Successfully checked out",
+        "session_duration": str(duration),
+        "check_out_time": checkout_time.isoformat()
+    }
+
+@api_router.get("/rfid/events", response_model=List[RFIDEvent])
+async def get_rfid_events(
+    current_user: User = Depends(get_current_user),
+    skip: int = 0,
+    limit: int = 100,
+    court_id: Optional[str] = None,
+    user_id: Optional[str] = None
+):
+    filter_dict = {}
+    
+    if current_user.role != UserRole.ADMIN:
+        filter_dict["user_id"] = current_user.id
+    else:
+        if court_id:
+            filter_dict["court_id"] = court_id
+        if user_id:
+            filter_dict["user_id"] = user_id
+    
+    events = await db.rfid_events.find(filter_dict).sort("timestamp", -1).skip(skip).limit(limit).to_list(limit)
+    return [RFIDEvent(**event) for event in events]
+
+# ==============================================================================
+# COURT PRESENCE TRACKING
+# ==============================================================================
+
+@api_router.get("/courts/{court_id}/presence", response_model=List[CourtPresence])
+async def get_court_presence(court_id: str):
+    presence = await db.court_presence.find({
+        "court_id": court_id,
+        "check_out_time": None  # Only active presence
+    }).to_list(100)
+    return [CourtPresence(**p) for p in presence]
+
+@api_router.get("/presence/user/{user_id}", response_model=List[CourtPresence])
+async def get_user_presence_history(
+    user_id: str,
+    current_user: User = Depends(get_current_user),
+    skip: int = 0,
+    limit: int = 100
+):
+    if current_user.role != UserRole.ADMIN and user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to view other user's presence history")
+    
+    presence = await db.court_presence.find({"user_id": user_id}).sort("check_in_time", -1).skip(skip).limit(limit).to_list(limit)
+    return [CourtPresence(**p) for p in presence]
+
+# ==============================================================================
+# TOURNAMENT MANAGEMENT
+# ==============================================================================
+
+@api_router.post("/tournaments", response_model=Tournament)
+async def create_tournament(tournament_data: TournamentCreate, current_user: User = Depends(get_current_user)):
+    tournament = Tournament(
+        **tournament_data.dict(),
+        organizer_id=current_user.id
+    )
+    await db.tournaments.insert_one(tournament.dict())
+    
+    # Broadcast new tournament
+    await manager.broadcast_general({
+        "type": "tournament_created",
+        "tournament": tournament.dict()
+    })
+    
+    return tournament
+
+@api_router.get("/tournaments", response_model=List[Tournament])
+async def get_tournaments(
+    skip: int = 0,
+    limit: int = 100,
+    status: Optional[TournamentStatus] = None,
+    is_public: bool = True
+):
+    filter_dict = {"is_public": is_public}
+    if status:
+        filter_dict["status"] = status
+    
+    tournaments = await db.tournaments.find(filter_dict).skip(skip).limit(limit).to_list(limit)
+    return [Tournament(**tournament) for tournament in tournaments]
+
+@api_router.get("/tournaments/{tournament_id}", response_model=Tournament)
+async def get_tournament(tournament_id: str):
+    tournament = await db.tournaments.find_one({"id": tournament_id})
+    if not tournament:
+        raise HTTPException(status_code=404, detail="Tournament not found")
+    return Tournament(**tournament)
+
+@api_router.post("/tournaments/{tournament_id}/register")
+async def register_for_tournament(
+    tournament_id: str,
+    registration: TournamentRegistration,
+    current_user: User = Depends(get_current_user)
+):
+    tournament = await db.tournaments.find_one({"id": tournament_id})
+    if not tournament:
+        raise HTTPException(status_code=404, detail="Tournament not found")
+    
+    tournament_obj = Tournament(**tournament)
+    
+    # Check if registration is open
+    if tournament_obj.status != TournamentStatus.REGISTRATION_OPEN:
+        raise HTTPException(status_code=400, detail="Tournament registration is not open")
+    
+    # Check if tournament is full
+    if len(tournament_obj.participants) >= tournament_obj.max_participants:
+        raise HTTPException(status_code=400, detail="Tournament is full")
+    
+    # Check if user is already registered
+    if current_user.id in tournament_obj.participants:
+        raise HTTPException(status_code=400, detail="Already registered for this tournament")
+    
+    # Register user
+    await db.tournaments.update_one(
+        {"id": tournament_id},
+        {
+            "$addToSet": {"participants": current_user.id},
+            "$set": {"updated_at": datetime.utcnow()}
+        }
+    )
+    
+    # Broadcast registration
+    await manager.broadcast_to_tournament({
+        "type": "participant_registered",
+        "tournament_id": tournament_id,
+        "user_id": current_user.id,
+        "participant_count": len(tournament_obj.participants) + 1
+    }, tournament_id)
+    
+    return {"message": "Successfully registered for tournament"}
+
+@api_router.get("/tournaments/{tournament_id}/matches", response_model=List[TournamentMatch])
+async def get_tournament_matches(tournament_id: str):
+    matches = await db.tournament_matches.find({"tournament_id": tournament_id}).to_list(100)
+    return [TournamentMatch(**match) for match in matches]
+
+# ==============================================================================
+# LIVE GAME SCORING
+# ==============================================================================
+
+@api_router.post("/games/{game_id}/score")
+async def update_live_score(
+    game_id: str,
+    score_update: LiveScoreUpdate,
+    current_user: User = Depends(get_current_user)
+):
+    # Verify game exists
+    game = await db.games.find_one({"id": game_id})
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    
+    # Check if user is authorized to update score (referee, player, or admin)
+    if (current_user.role != UserRole.ADMIN and 
+        current_user.id not in game["players"] and 
+        game.get("referee_id") != current_user.id):
+        raise HTTPException(status_code=403, detail="Not authorized to update game score")
+    
+    # Update game score
+    await db.games.update_one(
+        {"id": game_id},
+        {
+            "$set": {
+                "score": {"team1": score_update.team1_score, "team2": score_update.team2_score},
+                "updated_at": datetime.utcnow()
+            }
+        }
+    )
+    
+    # Create live game event
+    event = LiveGameEvent(
+        game_id=game_id,
+        event_type="score",
+        description=score_update.event_description or f"Score update: {score_update.team1_score} - {score_update.team2_score}",
+        game_time=score_update.game_time,
+        metadata={
+            "team1_score": score_update.team1_score,
+            "team2_score": score_update.team2_score,
+            "period": score_update.period
+        }
+    )
+    await db.live_game_events.insert_one(event.dict())
+    
+    # Broadcast score update
+    await manager.broadcast_to_game({
+        "type": "score_update",
+        "game_id": game_id,
+        "team1_score": score_update.team1_score,
+        "team2_score": score_update.team2_score,
+        "game_time": score_update.game_time,
+        "period": score_update.period,
+        "event_description": score_update.event_description
+    }, game_id)
+    
+    return {"message": "Score updated successfully"}
+
+@api_router.get("/games/{game_id}/events", response_model=List[LiveGameEvent])
+async def get_game_events(game_id: str, skip: int = 0, limit: int = 100):
+    events = await db.live_game_events.find({"game_id": game_id}).sort("timestamp", -1).skip(skip).limit(limit).to_list(limit)
+    return [LiveGameEvent(**event) for event in events]
+
+@api_router.post("/games/{game_id}/join")
+async def join_game_session(game_id: str, session_type: str = "spectating", current_user: User = Depends(get_current_user)):
+    # Verify game exists
+    game = await db.games.find_one({"id": game_id})
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    
+    # Check if user already has an active session
+    existing_session = await db.game_sessions.find_one({
+        "game_id": game_id,
+        "user_id": current_user.id,
+        "is_active": True
+    })
+    
+    if existing_session:
+        return {"message": "Already joined game session"}
+    
+    # Determine role
+    role = "spectator"
+    if current_user.id in game["players"]:
+        role = "player"
+    elif game.get("referee_id") == current_user.id:
+        role = "referee"
+    elif current_user.role == UserRole.COACH:
+        role = "coach"
+    
+    # Create game session
+    session = GameSession(
+        game_id=game_id,
+        session_type=session_type,
+        user_id=current_user.id,
+        role=role
+    )
+    await db.game_sessions.insert_one(session.dict())
+    
+    # Update live viewers count
+    await db.games.update_one(
+        {"id": game_id},
+        {"$inc": {"live_viewers": 1}}
+    )
+    
+    # Broadcast join event
+    await manager.broadcast_to_game({
+        "type": "user_joined",
+        "game_id": game_id,
+        "user_id": current_user.id,
+        "role": role,
+        "session_type": session_type
+    }, game_id)
+    
+    return {"message": "Joined game session successfully", "role": role}
+
+# ==============================================================================
+# ENHANCED CHALLENGE SYSTEM
+# ==============================================================================
+
+@api_router.post("/challenges/matchmaking")
+async def create_matchmaking_profile(
+    profile_data: ChallengeMatchmaking,
+    current_user: User = Depends(get_current_user)
+):
+    profile_data.user_id = current_user.id
+    
+    # Remove existing active profile
+    await db.challenge_matchmaking.update_many(
+        {"user_id": current_user.id},
+        {"$set": {"is_active": False, "updated_at": datetime.utcnow()}}
+    )
+    
+    # Create new profile
+    await db.challenge_matchmaking.insert_one(profile_data.dict())
+    
+    return {"message": "Matchmaking profile created successfully"}
+
+@api_router.get("/challenges/matchmaking/suggestions")
+async def get_matchmaking_suggestions(current_user: User = Depends(get_current_user)):
+    # Get user's matchmaking profile
+    profile = await db.challenge_matchmaking.find_one({
+        "user_id": current_user.id,
+        "is_active": True
+    })
+    
+    if not profile:
+        raise HTTPException(status_code=404, detail="No active matchmaking profile found")
+    
+    # Find compatible players
+    compatible_profiles = await db.challenge_matchmaking.find({
+        "user_id": {"$ne": current_user.id},
+        "is_active": True,
+        "preferred_skill_levels": {"$in": [current_user.skill_level]},
+        "preferred_game_types": {"$in": profile["preferred_game_types"]}
+    }).to_list(50)
+    
+    # Get user details for suggestions
+    suggestions = []
+    for comp_profile in compatible_profiles:
+        user = await db.users.find_one({"id": comp_profile["user_id"]})
+        if user:
+            suggestions.append({
+                "user": UserResponse(**user).dict(),
+                "matchmaking_profile": ChallengeMatchmaking(**comp_profile).dict(),
+                "compatibility_score": calculate_compatibility_score(profile, comp_profile)
+            })
+    
+    # Sort by compatibility score
+    suggestions.sort(key=lambda x: x["compatibility_score"], reverse=True)
+    
+    return suggestions[:10]  # Top 10 suggestions
+
+def calculate_compatibility_score(profile1: dict, profile2: dict) -> float:
+    """Calculate compatibility score between two matchmaking profiles"""
+    score = 0.0
+    
+    # Skill level compatibility
+    skill_overlap = set(profile1["preferred_skill_levels"]) & set(profile2["preferred_skill_levels"])
+    score += len(skill_overlap) * 20
+    
+    # Game type compatibility
+    game_type_overlap = set(profile1["preferred_game_types"]) & set(profile2["preferred_game_types"])
+    score += len(game_type_overlap) * 15
+    
+    # Stakes range compatibility
+    stakes1 = profile1["stakes_range"]
+    stakes2 = profile2["stakes_range"]
+    if stakes1["max"] >= stakes2["min"] and stakes2["max"] >= stakes1["min"]:
+        score += 25  # Stakes ranges overlap
+    
+    return min(score, 100.0)  # Cap at 100
+
 # Include router
 app.include_router(api_router)
 
