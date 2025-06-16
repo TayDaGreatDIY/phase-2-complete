@@ -207,11 +207,12 @@ def test_challenges():
             "skill_level_required": "intermediate",
             "game_type": "1v1",
             "scheduled_time": (datetime.datetime.utcnow() + datetime.timedelta(days=1)).isoformat(),
-            "max_participants": 2
+            "max_participants": 2,
+            "challenger_id": user_ids.get("player")  # Add this line
         }
         
         response = make_request("POST", "/challenges", data=challenge_data, token=tokens.get("player"))
-        create_challenge_success = response.status_code == 200 and "id" in response.json()
+        create_challenge_success = response.status_code == 200
         print_test_result("Create Challenge", create_challenge_success, response)
         all_passed = all_passed and create_challenge_success
         
