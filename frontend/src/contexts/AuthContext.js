@@ -27,11 +27,16 @@ export const AuthProvider = ({ children }) => {
           setUser(JSON.parse(storedUser));
           // Verify token is still valid
           await authAPI.getCurrentUser();
+          
+          // Connect to WebSocket if user is authenticated
+          const userData = JSON.parse(storedUser);
+          websocketService.connect(userData.id);
         } catch (error) {
           console.error('Token validation failed:', error);
           localStorage.removeItem('accessToken');
           localStorage.removeItem('user');
           setUser(null);
+          websocketService.disconnect();
         }
       }
       setLoading(false);
