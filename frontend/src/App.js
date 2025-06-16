@@ -8,6 +8,9 @@ import Courts from './components/Courts';
 import Challenges from './components/Challenges';
 import Store from './components/Store';
 import Coaches from './components/Coaches';
+import RFIDCheckin from './components/RFIDCheckin';
+import Tournaments from './components/Tournaments';
+import LiveScoring from './components/LiveScoring';
 import "./App.css";
 
 // Protected Route Component
