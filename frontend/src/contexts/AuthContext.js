@@ -52,6 +52,9 @@ export const AuthProvider = ({ children }) => {
       localStorage.setItem('user', JSON.stringify(userData));
       setUser(userData);
       
+      // Connect to WebSocket after successful login
+      websocketService.connect(userData.id);
+      
       return { success: true };
     } catch (error) {
       const errorMessage = error.response?.data?.detail || 'Login failed';
@@ -74,6 +77,9 @@ export const AuthProvider = ({ children }) => {
       localStorage.setItem('user', JSON.stringify(newUser));
       setUser(newUser);
       
+      // Connect to WebSocket after successful registration
+      websocketService.connect(newUser.id);
+      
       return { success: true };
     } catch (error) {
       const errorMessage = error.response?.data?.detail || 'Registration failed';
@@ -89,6 +95,9 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('user');
     setUser(null);
     setError(null);
+    
+    // Disconnect WebSocket on logout
+    websocketService.disconnect();
   };
 
   const updateUser = (updatedUser) => {
