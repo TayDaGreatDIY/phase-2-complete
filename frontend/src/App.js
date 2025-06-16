@@ -96,6 +96,30 @@ function App() {
                 </ProtectedRoute>
               } 
             />
+            <Route 
+              path="/rfid" 
+              element={
+                <ProtectedRoute>
+                  <RFIDCheckin />
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/tournaments" 
+              element={
+                <ProtectedRoute>
+                  <Tournaments />
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/live-scoring" 
+              element={
+                <ProtectedRoute>
+                  <LiveScoring />
+                </ProtectedRoute>
+              } 
+            />
             
             {/* Fallback */}
             <Route path="*" element={<Navigate to="/" />} />
